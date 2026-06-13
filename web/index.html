@@ -41,23 +41,22 @@
 <body>
 <header>
   <div class="wrap">
-    <h1>PressPose</h1>
-    <p class="tag">Attentive cross-modal pairing of <b>plantar-pressure</b> and <b>2D-pose</b> streams —
-       deciding whether an insole signal and a skeleton belong to the <i>same person</i>, for social-robot HRI.</p>
+    <h1>CrossSense</h1>
+    <p class="tag">Attentive <b>cross-modal sensor pairing</b> — given two time-series sensor streams,
+       decide whether they came from the <i>same person</i>. Learned directly on raw signals.</p>
     <div class="btns">
-      <a class="btn primary" href="https://github.com/jntbatra/PressPose">GitHub repo →</a>
-      <a class="btn" href="https://github.com/jntbatra/PressPose#readme">Docs</a>
+      <a class="btn primary" href="https://github.com/jntbatra/CrossSense">GitHub repo →</a>
+      <a class="btn" href="https://github.com/jntbatra/CrossSense#readme">Docs</a>
     </div>
   </div>
 </header>
 
 <section><div class="wrap">
   <h2>The idea</h2>
-  <p>The original baseline rendered raw sensor numbers into 32×32 images so a frozen
-     <b>VGG16 + LSTM</b> could read them — heavyweight and ImageNet-dependent. PressPose drops that
-     entirely and learns <b>cross-attention directly on the raw signals</b>: each modality is encoded
-     by a small Transformer over time, then the insole and skeleton streams attend to each other before
-     a pairing head.</p>
+  <p>Two sensor streams, one question: <i>same person?</i> CrossSense encodes each modality with a
+     small Transformer over time, then lets the two streams <b>attend to each other</b> before a
+     pairing head — learning <b>directly on raw signals</b>, with no hand-crafted features, image
+     rendering, or ImageNet backbone (unlike the original VGG16+LSTM baseline it grew from).</p>
   <div class="grid">
     <div class="stat"><b>185K</b><span>parameters</span></div>
     <div class="stat"><b>~79×</b><span>smaller than VGG16 backbone</span></div>
@@ -69,9 +68,9 @@
   <h2>Architecture</h2>
   <pre class="mermaid">
 flowchart LR
-    A["Insole pressure<br/>T x 8"] --> EA["Modality Encoder<br/>(Transformer)"]
-    B["Skeleton joints<br/>T x 12"] --> EB["Modality Encoder<br/>(Transformer)"]
-    EA --> X["Cross-attention<br/>insole &harr; skeleton"]
+    A["Sensor stream A<br/>(accel / pressure)"] --> EA["Modality Encoder<br/>(Transformer)"]
+    B["Sensor stream B<br/>(gyro / 2D pose)"] --> EB["Modality Encoder<br/>(Transformer)"]
+    EA --> X["Cross-attention<br/>A &harr; B"]
     EB --> X
     X --> P["Mean pool + MLP head"]
     P --> O{{"PAIRED / UNPAIRED"}}
@@ -113,9 +112,9 @@ flowchart LR
 </div></section>
 
 <footer><div class="wrap">
-  Original method &amp; baseline: Sevendi Eldrige Rifki Poluan (2022). ·
-  Contributors: Jayant Batra, Harshita Narula. ·
-  <a href="https://github.com/jntbatra/PressPose">github.com/jntbatra/PressPose</a>
+  Original plantar-pressure/pose method &amp; baseline: Sevendi Eldrige Rifki Poluan (2022). ·
+  Cross-attention model &amp; benchmarks: Jayant Batra, Harshita Narula. ·
+  <a href="https://github.com/jntbatra/CrossSense">github.com/jntbatra/CrossSense</a>
 </div></footer>
 
 <script type="module">

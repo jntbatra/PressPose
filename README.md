@@ -1,36 +1,53 @@
-# PressPose — Attentive Cross-Modal Pairing of Plantar Pressure and 2D Pose
+# CrossSense — Attentive Cross-Modal Sensor Pairing
 
-Person association for social-robot HRI: given a **smart-insole pressure stream**
-and an **OpenPose 2D-skeleton stream**, decide whether they belong to the *same
-person* (`PAIRED`) or not (`UNPAIRED`).
+Given two **time-series sensor streams**, decide whether they came from the
+**same person** (`PAIRED`) or not (`UNPAIRED`). CrossSense learns this directly
+from raw signals with a lightweight cross-attention model — no hand-crafted
+features, no image rendering, no ImageNet backbone.
 
-This repo contains two implementations of that task:
+The method is modality-agnostic. It is demonstrated on two pairings:
 
-| | Pipeline | Stack | Notes |
-|---|---|---|---|
-| **`src/` (current)** | Learned **cross-modal attention** directly on raw signals | PyTorch | No image rendering, no ImageNet backbone, edge-deployable |
-| **`codes/` (baseline)** | Render each frame to a 32×32 image → frozen **VGG16** → **LSTM** | TensorFlow | Original method, built to train on an NVIDIA TX2 |
+| Pairing | Data | Status |
+|---|---|---|
+| **Accelerometer ↔ Gyroscope** | UCI HAR (public, 30 subjects) | **Benchmarked** — see below |
+| **Plantar pressure ↔ 2D pose** | Smart-insole + OpenPose (original application) | On-task benchmark pending full dataset |
 
-## Why the new model
+## Results — UCI HAR (subject-disjoint)
 
-The baseline turns raw sensor numbers into little pictures so a pretrained CNN can
-read them — clever, but heavyweight and ImageNet-dependent. The new model drops
-that entirely and learns on the signals themselves:
+On the public [UCI HAR](https://archive.ics.uci.edu/dataset/240) dataset, the
+model decides whether an **accelerometer** window and a **gyroscope** window came
+from the same person. Scored **subject-disjoint** — the 9 test subjects are never
+seen during training, so the score reflects generalisation to new people, not
+memorised per-subject signal.
+
+| Metric | Score |
+|---|---|
+| Accuracy | **0.811** |
+| Macro-F1 | **0.810** |
+| ROC-AUC | **0.872** |
+
+*30 subjects, 9 held out, 6,038 test pairs, 12 epochs, 185K-param model.
+Reproduce:* `python scripts/har_benchmark.py --zip <har.zip>`
+
+> Note: this is **cross-modal person pairing**, a non-standard use of UCI HAR
+> (whose standard task is 6-class activity recognition). Reported as such.
+
+## Method
 
 ```mermaid
 flowchart LR
-    A["Insole pressure<br/>T x 8"] --> EA["Modality Encoder<br/>(Transformer)"]
-    B["Skeleton joints<br/>T x 12"] --> EB["Modality Encoder<br/>(Transformer)"]
-    EA --> X["Cross-attention<br/>insole &harr; skeleton"]
+    A["Sensor stream A<br/>(e.g. accel / pressure)"] --> EA["Modality Encoder<br/>(Transformer)"]
+    B["Sensor stream B<br/>(e.g. gyro / 2D pose)"] --> EB["Modality Encoder<br/>(Transformer)"]
+    EA --> X["Cross-attention<br/>A &harr; B"]
     EB --> X
     X --> P["Mean pool + MLP head"]
     P --> O{{"PAIRED / UNPAIRED"}}
 ```
 
-Each modality is encoded with a small Transformer over the time axis, then the two
-streams attend to each other (insole↔skeleton) before a pairing head. It is far
-smaller than VGG16+LSTM and runs comfortably on modern GPUs (incl. RTX 5060 /
-Blackwell — see GPU note below) or CPU.
+Each modality is encoded by a small Transformer over the time axis; the two
+streams then attend to each other before a pairing head. ~185K parameters —
+**~79× smaller** than the VGG16 backbone of the original image-rendering baseline,
+and with no ImageNet dependency.
 
 ![Parameter count vs the VGG16 backbone](assets/model_size.png)
 
@@ -46,90 +63,53 @@ pip install -r requirements.txt
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 ```
 
-(TensorFlow's Windows-native GPU support ends at 2.10 — for the legacy `codes/`
-baseline on GPU, use WSL2.)
-
 ## Usage
 
 ```bash
-# Smoke test the whole pipeline on synthetic data (no dataset required)
+# UCI HAR benchmark (downloads/uses the public dataset zip)
+python scripts/har_benchmark.py --zip <har.zip> --epochs 12
+
+# Train on paired CSV streams (smart-insole-*.csv + open-pose-*.csv)
+python src/train.py --data-dir <data_dir> --epochs 30
+
+# Subject-disjoint benchmark on CSV data (Accuracy / F1 / ROC-AUC)
+python src/evaluate.py --data-dir <data_dir> --epochs 40 --test-frac 0.3
+
+# Smoke test the pipeline on synthetic data (no dataset required)
 python src/train.py --synthetic --epochs 15
 
-# Train on real CSVs (smart-insole-*.csv + open-pose-*.csv in a folder)
-python src/train.py --data-dir sample-test-data --epochs 30
-
-# Inference: is this insole stream the same person as this pose stream?
+# Inference: same person?
 python src/infer.py --ckpt model/cross_attn.pt \
     --insole sample-test-data/smart-insole-A.csv \
     --openpose sample-test-data/open-pose-1.csv
-
-# Honest benchmark: held-out (subject-disjoint) Accuracy / F1 / ROC-AUC
-# Needs the full multi-subject dataset; refuses the 2-subject sample.
-python src/evaluate.py --data-dir <full_dataset> --epochs 40 --test-frac 0.3
 ```
 
-Data format: insole CSVs carry 8 pressure channels
-(`R/L_HEEL, R/L_THUMB, R/L_INNER_BALL, R/L_OUTER_BALL`); OpenPose CSVs carry
-lower-body joint coordinates. Streams are aligned by wall-clock second and
-resampled to a fixed window length.
+**Honest benchmarking.** `src/evaluate.py` and `scripts/har_benchmark.py` hold out
+*whole subjects* for the test set. A random split would leak per-subject signal
+and inflate the score; both refuse to score on fewer than 2 subjects per split
+(so the 2-subject insole/pose sample is intentionally rejected).
 
-Regenerate the figures in this README with:
+> The synthetic generator is for development/CI sanity only — not a benchmark.
 
-```bash
-python scripts/make_figures.py
-```
+## Original application & legacy baseline (`codes/`)
 
-![Synthetic smoke-test learning curve](assets/training_curve.png)
-
-> The synthetic generator and the curve above are for development/CI sanity only
-> — they are **not** a benchmark or research result.
-
-**Benchmarking protocol.** Real metrics come from `src/evaluate.py`, which holds
-out *whole subjects* for the test set. A random split would leak per-subject
-signal and inflate the score, so the harness scores only people unseen in
-training and reports Accuracy / macro-F1 / ROC-AUC. It requires ≥2 subjects per
-split — the 2-subject sample data is intentionally rejected.
-
-### Generalisation result (UCI HAR, public dataset)
-
-To validate the method on real multi-subject data, the same cross-attention model
-is applied to a *different* cross-modal pairing task on the public
-[UCI HAR](https://archive.ics.uci.edu/dataset/240) dataset: decide whether an
-**accelerometer** stream and a **gyroscope** stream came from the same person.
-30 subjects, scored **subject-disjoint** (test people unseen in training):
-
-| Metric | Score |
-|---|---|
-| Accuracy | **0.811** |
-| Macro-F1 | **0.810** |
-| ROC-AUC | **0.872** |
-
-*(9 held-out subjects, 6,038 test pairs, 12 epochs. Reproduce:
-`python scripts/har_benchmark.py --zip <har.zip>`.)*
-
-> ⚠️ This is a **generalisation demo on UCI HAR (accel↔gyro)** — it is **not** the
-> plantar-pressure / 2D-pose benchmark, which is still pending the full released
-> dataset. Do not cite these numbers as the insole/pose result.
-
-## Legacy baseline (`codes/`)
-
-The original TensorFlow method is preserved unchanged. See `codes/requirements-legacy.txt`
-and the commands below.
+CrossSense grew out of a plantar-pressure / 2D-pose person-pairing project. The
+original TensorFlow baseline (render each frame to a 32×32 image → frozen VGG16 →
+LSTM) is preserved unchanged in `codes/`:
 
 ```bash
 cd codes
 pip install -r requirements-legacy.txt
-python splitdatasets.py     # chunk dataset for low-memory (TX2) training
-python train.py             # full training
-python lightweighttrain.py  # lightweight training
-python app.py               # run the app
+python train.py
+python app.py
 ```
 
-Trained baseline weights (`model/*.hdf5`, ~87 MB) are not tracked in git — keep
-them locally or attach them to a release. Full datasets: see links in `train-sets/`.
+Trained baseline weights (`model/*.hdf5`, ~87 MB) are not tracked in git. Full
+insole/pose dataset: links in `train-sets/`.
 
-## Authors & credits
+## Credits
 
-- Original method and TensorFlow baseline: **Sevendi Eldrige Rifki Poluan** (2022).
-- Contributors: **Harshita Narula** (`harshitanarula08@gmail.com`).
-- Cross-modal attention extension: this repository.
+- Original plantar-pressure / 2D-pose method & TensorFlow baseline:
+  **Sevendi Eldrige Rifki Poluan** (2022).
+- Cross-attention model, benchmarks, and this repository:
+  **Jayant Batra**, **Harshita Narula**.
